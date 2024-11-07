@@ -1,86 +1,85 @@
 package main
 
 import (
-    "net"
+	"net"
 	"fmt"
 	"os"
 )
 
 type BytePacketBuffer struct {
-    buf [512]uint8
-    pos uint
+	buf [512]uint8
+	pos uint
 }
 
 type ResultCode int
 
 const (
-    NOERROR ResultCode = iota
-    FORMERR
-    SERVFAIL
-    NXDOMAIN
-    NOTIMP
-    REFUSED
+	NOERROR ResultCode = iota
+	FORMERR
+	SERVFAIL
+	NXDOMAIN
+	NOTIMP
+	REFUSED
 )
 
 // 72 bits = 12 bytes
 type DnsHeader struct {
-    id uint16                       // 16 bits
+	id uint16                       // 16 bits
 
-    recursion_desired bool          // 1 bit
-    truncated_message bool          // 1 bit
-    authoritative_answer bool       // 1 bit
-    opcode uint8                    // 4 bits
-    response bool                   // 1 bit
+	recursion_desired bool          // 1 bit
+	truncated_message bool          // 1 bit
+	authoritative_answer bool       // 1 bit
+	opcode uint8                    // 4 bits
+	response bool                   // 1 bit
 
-    rescode ResultCode              // 4 bits
-    checking_disabled bool          // 1 bit
-    authed_data bool                // 1 bit
-    z bool                          // 1 bit
-    recursion_available bool        // 1 bit
+	rescode ResultCode              // 4 bits
+	checking_disabled bool          // 1 bit
+	authed_data bool                // 1 bit
+	z bool                          // 1 bit
+	recursion_available bool        // 1 bit
 
-    questions uint16                 // 16 bits
-    answers uint16                  // 16 bits
-    authoritative_entries uint16    // 16 bits
-    resource_entries uint16         // 16 bits
-
+	questions uint16                 // 16 bits
+	answers uint16                  // 16 bits
+	authoritative_entries uint16    // 16 bits
+	resource_entries uint16         // 16 bits
 }
 
 type QueryType struct {
-    Type int
-    Value uint16
+	Type int
+	Value uint16
 }
 
 var (
-    QueryTypeA = QueryType{Type: 1}
+	QueryTypeA = QueryType{Type: 1}
 )
 
 type DnsQuestion struct {
-    name string
-    qtype QueryType
+	name string
+	qtype QueryType
 }
 
 type DnsRecordType int
 
 const (
-    DnsRecordTypeUnknown DnsRecordType = iota
-    DnsRecordTypeA
+	DnsRecordTypeUnknown DnsRecordType = iota
+	DnsRecordTypeA
 )
 
 type DnsRecord struct {
-    Type DnsRecordType
-    domain string
-    qtype uint16
-    data_len uint16
-    ttl uint32
-    addr net.IP
+	Type DnsRecordType
+	domain string
+	qtype uint16
+	data_len uint16
+	ttl uint32
+	addr net.IP
 }
 
 type DnsPacket struct {
-    header DnsHeader
-    questions []DnsQuestion
-    answers []DnsRecord
-    authorities []DnsRecord
-    resources []DnsRecord
+	header DnsHeader
+	questions []DnsQuestion
+	answers []DnsRecord
+	authorities []DnsRecord
+	resources []DnsRecord
 }
   
 
@@ -105,7 +104,6 @@ func (buffer *BytePacketBuffer) seek(pos uint) {
 func (buffer *BytePacketBuffer) read() (uint8) {
     if buffer.pos >= 512 {
 		panic("End of Buffer")
-        return 0
     }
     res := buffer.buf[buffer.pos]
     buffer.pos++
@@ -115,7 +113,6 @@ func (buffer *BytePacketBuffer) read() (uint8) {
 func (buffer *BytePacketBuffer) get(pos uint) (uint8) {
     if pos >= 512 {
 		panic("End of Buffer")
-        return 0
     }
 
     return buffer.buf[pos]
@@ -124,8 +121,8 @@ func (buffer *BytePacketBuffer) get(pos uint) (uint8) {
 func (buffer *BytePacketBuffer) get_range(start uint, length uint) ([]uint8) {
     if start + length >= 512 {
 		panic("End of Buffer")
-        return []uint8{}
-    }
+
+	}
     
     return buffer.buf[start:start + length]
 }
@@ -184,6 +181,10 @@ func (buffer *BytePacketBuffer) read_qname(outstr *string) {
             pos++
 
             if length == 0 {
+				if *outstr == "" {
+					*outstr = "."
+				}
+
                 break
             }
 
@@ -307,18 +308,23 @@ func NewDnsQuestion (name string, qtype QueryType) (DnsQuestion) {
 func (self *DnsQuestion) read(buffer *BytePacketBuffer) {
     buffer.read_qname(&self.name)
     qtype := buffer.read_uint16()
+	buffer.read_uint16()
 
     self.qtype = QueryTypeFromNum(qtype)
 
 }
 
-func DnsRecordRead (buffer *BytePacketBuffer, dns *DnsRecord) {
-    var domain string
-    buffer.read_qname(&domain)
+func DnsRecordRead (buffer *BytePacketBuffer) (DnsRecord) {
+	dns := DnsRecord{}
+	var domain string
+	buffer.read_qname(&domain)
+
+    dns.domain = domain
+
     qtype_num := buffer.read_uint16()
 
     qtype := QueryTypeFromNum(qtype_num)
-    buffer.read_uint16()
+	buffer.read_uint16()
 
     ttl := buffer.read_uint32()
     data_len := buffer.read_uint16()
@@ -329,19 +335,24 @@ func DnsRecordRead (buffer *BytePacketBuffer, dns *DnsRecord) {
 
         addr := net.IPv4(uint8((raw_addr >> 24) & 0xFF), uint8((raw_addr >> 16) & 0xFF), uint8((raw_addr >> 8) & 0xFF), uint8((raw_addr >> 0) & 0xFF))
 
+		dns.Type = DnsRecordTypeA
         dns.domain = domain
+        dns.qtype = qtype_num
+        dns.data_len = data_len
         dns.addr = addr
         dns.ttl = ttl
 
     default:
-        buffer.step(uint(data_len))
 
+		dns.Type = DnsRecordTypeUnknown
         dns.domain = domain
         dns.qtype = qtype_num
         dns.data_len = data_len
         dns.ttl = ttl
+        buffer.step(uint(data_len))
         
     }
+	return dns
 }
 
 func NewDnsPacket() (*DnsPacket) {
@@ -355,34 +366,29 @@ func NewDnsPacket() (*DnsPacket) {
 }
 
 func DnsPacketFromBuffer (buffer *BytePacketBuffer) (*DnsPacket) {
-    var i uint16
 	result := NewDnsPacket()
     result.header.read(buffer)
 
-    for i = 0; i < result.header.questions; i++ {
+    for i := uint16(0); i < result.header.questions; i++ {
         question := NewDnsQuestion("", QueryType { Type: 0, Value: 0 })
         question.read(buffer)
         result.questions = append(result.questions, question)
     }
 
-    for i = 0; i < result.header.answers; i++ {
-        var answer DnsRecord
-        DnsRecordRead(buffer, &answer)
+    for i := uint16(0); i < result.header.answers; i++ {
+		answer := DnsRecordRead(buffer)
         result.answers = append(result.answers, answer)
     }
 
-    for i = 0; i < result.header.authoritative_entries; i++ {
-        var rec DnsRecord
-        DnsRecordRead(buffer, &rec)
+    for i := uint16(0); i < result.header.authoritative_entries; i++ {
+		rec := DnsRecordRead(buffer)
         result.authorities = append(result.authorities, rec)
     }
 
-    for i = 0; i < result.header.resource_entries ; i++ {
-        var rec DnsRecord
-        DnsRecordRead(buffer, &rec)
+    for i := uint16(0); i < result.header.resource_entries ; i++ {
+		rec := DnsRecordRead(buffer)
         result.resources = append(result.resources, rec)
    }
-   fmt.Println(result.header)
    return result
 }
 
@@ -405,6 +411,8 @@ func main() {
 
 	packet = *DnsPacketFromBuffer(buffer)
 	fmt.Printf("%#v\n", packet.header)
+	fmt.Printf("%#v\n", packet.questions)
+	fmt.Printf("%#v\n", packet.answers)
 
 
 }
