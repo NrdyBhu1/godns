@@ -1,14 +1,10 @@
 package main
 
 import (
-    "errors"
     "net"
 	"fmt"
 	"os"
 )
-
-var EndOfBuffer = errors.New("End of Buffer")
-var MaxJumps = errors.New("Max jumps exceeded")
 
 type BytePacketBuffer struct {
     buf [512]uint8
@@ -106,69 +102,50 @@ func (buffer *BytePacketBuffer) seek(pos uint) {
     buffer.pos = pos
 }
 
-func (buffer *BytePacketBuffer) read() (uint8, error) {
+func (buffer *BytePacketBuffer) read() (uint8) {
     if buffer.pos >= 512 {
-        return 0,EndOfBuffer
+		panic("End of Buffer")
+        return 0
     }
     res := buffer.buf[buffer.pos]
     buffer.pos++
-    return res,nil
+    return res
 }
 
-func (buffer *BytePacketBuffer) get(pos uint) (uint8, error) {
+func (buffer *BytePacketBuffer) get(pos uint) (uint8) {
     if pos >= 512 {
-        return 0,EndOfBuffer
+		panic("End of Buffer")
+        return 0
     }
 
-    return buffer.buf[pos],nil
+    return buffer.buf[pos]
 }
 
-func (buffer *BytePacketBuffer) get_range(start uint, length uint) ([]uint8, error) {
+func (buffer *BytePacketBuffer) get_range(start uint, length uint) ([]uint8) {
     if start + length >= 512 {
-        return []uint8{},EndOfBuffer
+		panic("End of Buffer")
+        return []uint8{}
     }
     
-    return buffer.buf[start:start + length],nil
+    return buffer.buf[start:start + length]
 }
 
-func (buffer *BytePacketBuffer) read_uint16() (uint16, error) {
+func (buffer *BytePacketBuffer) read_uint16() (uint16) {
     var res uint16
 
-    bitone,err := buffer.read()
-    if err != nil {
-        return res,err
-    }
-
-    bittwo, err := buffer.read()
-    if err != nil {
-        return res,err
-    }
-
-    res = uint16(bitone) << 8 | uint16(bittwo)
-    return res,nil
+    res = uint16(buffer.read()) << 8 | uint16(buffer.read())
+    return res
 }
 
-func (buffer *BytePacketBuffer) read_uint32() (uint32, error) {
+func (buffer *BytePacketBuffer) read_uint32() (uint32) {
     var res uint32
 
-    bitone,err := buffer.read()
-    if err != nil { return res,err }
+    res = uint32(buffer.read()) << 24 | uint32(buffer.read()) << 16 | uint32(buffer.read()) << 8 | uint32(buffer.read())
 
-    bittwo,err := buffer.read()
-    if err != nil { return res,err }
-
-    bitthree,err := buffer.read()
-    if err != nil { return res,err }
-
-    bitfour,err := buffer.read()
-    if err != nil { return res,err }
-
-    res = uint32(bitone) << 24 | uint32(bittwo) << 16 | uint32(bitthree) << 8 | uint32(bitfour)
-
-    return res,nil
+    return res
 }
 
-func (buffer *BytePacketBuffer) read_qname(outstr *string) error {
+func (buffer *BytePacketBuffer) read_qname(outstr *string) {
     var pos uint 
     var jumped bool
     var jumps_performed int
@@ -183,19 +160,17 @@ func (buffer *BytePacketBuffer) read_qname(outstr *string) error {
     for {
     
         if jumps_performed > max_jumps {
-            return MaxJumps
+        	panic("Max jumps performed") 
         }
 
-        length,err := buffer.get(pos)
-        if err != nil { return err }
+        length := buffer.get(pos)
 
         if (length & 0xC0) == 0xC0 {
             if !jumped {
                 buffer.seek(pos + 2)
             }
 
-            b2, err := buffer.get(pos + 1)
-            if err != nil { return err }
+            b2 := buffer.get(pos + 1)
             offset := (uint16(length) ^ 0xC0) << 8 | uint16(b2)
             pos = uint(offset)
 
@@ -213,8 +188,7 @@ func (buffer *BytePacketBuffer) read_qname(outstr *string) error {
             }
 
             *outstr += delim
-            str_buffer,err := buffer.get_range(pos, uint(length))
-            if err != nil { return err }
+            str_buffer := buffer.get_range(pos, uint(length))
             *outstr += string(str_buffer)
 
             delim = "."
@@ -227,8 +201,6 @@ func (buffer *BytePacketBuffer) read_qname(outstr *string) error {
     if !jumped {
         buffer.seek(pos)
     }
-
-    return nil
 }
 
 func ResCodeFromNum (num uint8) ResultCode {
@@ -258,8 +230,8 @@ func ResCodeFromNum (num uint8) ResultCode {
     return res
 }
 
-func NewDnsHeader() *DnsHeader {
-    return &DnsHeader {
+func NewDnsHeader() DnsHeader {
+    return DnsHeader {
         id: 0,
 
         recursion_desired: false,
@@ -281,13 +253,10 @@ func NewDnsHeader() *DnsHeader {
     }
 }
 
-func (self *DnsHeader) read(buffer *BytePacketBuffer) error {
-    var err error
-    self.id,err = buffer.read_uint16()
-    if err != nil { return err }
+func (self *DnsHeader) read(buffer *BytePacketBuffer) {
+    self.id = buffer.read_uint16()
     
-    flags,err := buffer.read_uint16()
-    if err != nil { return err }
+    flags := buffer.read_uint16()
     a := uint8(flags >> 8)
     b := uint8(flags & 0xFF)
 
@@ -303,16 +272,10 @@ func (self *DnsHeader) read(buffer *BytePacketBuffer) error {
     self.z = (b & (1 << 6)) > 0
     self.recursion_available = (b & (1 << 7)) > 0
 
-    self.questions,err = buffer.read_uint16()
-    if err != nil { return err }
-    self.answers,err = buffer.read_uint16()
-    if err != nil { return err }
-    self.authoritative_entries,err = buffer.read_uint16()
-    if err != nil { return err }
-    self.resource_entries,err = buffer.read_uint16()
-    if err != nil { return err }
-
-    return nil
+    self.questions = buffer.read_uint16()
+    self.answers = buffer.read_uint16()
+    self.authoritative_entries = buffer.read_uint16()
+    self.resource_entries = buffer.read_uint16()
 }
 
 func QueryTypeToNum(queryType QueryType) uint16 {
@@ -341,34 +304,28 @@ func NewDnsQuestion (name string, qtype QueryType) (DnsQuestion) {
     }
 }
 
-func (self *DnsQuestion) read(buffer *BytePacketBuffer) error {
+func (self *DnsQuestion) read(buffer *BytePacketBuffer) {
     buffer.read_qname(&self.name)
-    qtype,err := buffer.read_uint16()
-    if err != nil { return err }
+    qtype := buffer.read_uint16()
 
     self.qtype = QueryTypeFromNum(qtype)
 
-    return nil
 }
 
-func DnsRecordRead (buffer *BytePacketBuffer, dns *DnsRecord) (error) {
+func DnsRecordRead (buffer *BytePacketBuffer, dns *DnsRecord) {
     var domain string
     buffer.read_qname(&domain)
-    qtype_num, err := buffer.read_uint16()
-    if err != nil { return err }
+    qtype_num := buffer.read_uint16()
 
     qtype := QueryTypeFromNum(qtype_num)
     buffer.read_uint16()
 
-    ttl, err := buffer.read_uint32()
-    if err != nil { return err }
-    data_len, err := buffer.read_uint16()
-    if err != nil { return err }
+    ttl := buffer.read_uint32()
+    data_len := buffer.read_uint16()
 
     switch qtype.Type {
     case 1:
-        raw_addr, err := buffer.read_uint32()
-        if err != nil { return err }
+        raw_addr := buffer.read_uint32()
 
         addr := net.IPv4(uint8((raw_addr >> 24) & 0xFF), uint8((raw_addr >> 16) & 0xFF), uint8((raw_addr >> 8) & 0xFF), uint8((raw_addr >> 0) & 0xFF))
 
@@ -385,13 +342,11 @@ func DnsRecordRead (buffer *BytePacketBuffer, dns *DnsRecord) (error) {
         dns.ttl = ttl
         
     }
-
-    return nil
 }
 
 func NewDnsPacket() (*DnsPacket) {
     return &DnsPacket {
-        header: *NewDnsHeader(),
+        header: NewDnsHeader(),
         // questions: []DnsQuestion{},
         // answers: []DnsRecord{},
         // authorities: []DnsRecord{},
@@ -399,9 +354,9 @@ func NewDnsPacket() (*DnsPacket) {
     }
 }
 
-func DnsPacketFromBuffer (buffer *BytePacketBuffer, result *DnsPacket) error {
+func DnsPacketFromBuffer (buffer *BytePacketBuffer) (*DnsPacket) {
     var i uint16
-    result = NewDnsPacket()
+	result := NewDnsPacket()
     result.header.read(buffer)
 
     for i = 0; i < result.header.questions; i++ {
@@ -426,9 +381,9 @@ func DnsPacketFromBuffer (buffer *BytePacketBuffer, result *DnsPacket) error {
         var rec DnsRecord
         DnsRecordRead(buffer, &rec)
         result.resources = append(result.resources, rec)
-    }
-
-    return nil
+   }
+   fmt.Println(result.header)
+   return result
 }
 
 func main() {
@@ -447,14 +402,8 @@ func main() {
 		fmt.Println(err)
 		return
 	}
-	fmt.Printf("%#v\n", *buffer)
 
-	err = DnsPacketFromBuffer(buffer, &packet)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
+	packet = *DnsPacketFromBuffer(buffer)
 	fmt.Printf("%#v\n", packet.header)
 
 
