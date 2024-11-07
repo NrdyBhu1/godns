@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 )
 
@@ -512,7 +514,19 @@ func (self *DnsPacket) write(buffer *BytePacketBuffer) {
 }
 
 func main() {
-	qname := "google.com"
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("Enter domain: ")
+	qname, err := reader.ReadString('\n')
+
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	qname = strings.TrimSpace(qname)
+
+	// qname := "google.com"
 	qtype := QueryTypeA
 
 	serverAddr, err := net.ResolveUDPAddr("udp", "8.8.8.8:53")
