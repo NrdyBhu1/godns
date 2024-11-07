@@ -3,8 +3,16 @@ package main
 import (
 	"fmt"
 	"net"
-	"os"
+	"strings"
 )
+
+func b2i(v bool) int {
+	if v == true {
+		return 1
+	}
+
+	return 0
+}
 
 type BytePacketBuffer struct {
 	buf [512]uint8
@@ -203,6 +211,50 @@ func (buffer *BytePacketBuffer) read_qname(outstr *string) {
 	}
 }
 
+func (buffer *BytePacketBuffer) write(val uint8) {
+	if buffer.pos >= 512 {
+		panic("End of Buffer")
+	}
+
+	buffer.buf[buffer.pos] = val
+	buffer.pos++
+}
+
+func (buffer *BytePacketBuffer) write_uint8(val uint8) {
+	buffer.write(val)
+}
+
+func (buffer *BytePacketBuffer) write_uint16(val uint16) {
+	buffer.write(uint8(val >> 8))
+	buffer.write(uint8(val & 0xFF))
+}
+
+func (buffer *BytePacketBuffer) write_uint32(val uint32) {
+	buffer.write(uint8((val >> 24) & 0xFF))
+	buffer.write(uint8((val >> 16) & 0xFF))
+	buffer.write(uint8((val >> 8) & 0xFF))
+	buffer.write(uint8((val >> 0) & 0xFF))
+}
+
+func (buffer *BytePacketBuffer) write_qname(qname *string) {
+
+	slice := strings.Split(*qname, ".")
+
+	for _, v := range slice {
+		length := len(v)
+		if length > 0x3f {
+			panic("Single label exceeds 63 bytes of character")
+		}
+
+		buffer.write_uint8(uint8(length))
+		for _, i := range v {
+			buffer.write_uint8(uint8(i))
+		}
+	}
+
+	buffer.write_uint8(0)
+}
+
 func ResCodeFromNum(num uint8) ResultCode {
 	var res ResultCode
 	switch num {
@@ -278,6 +330,19 @@ func (self *DnsHeader) read(buffer *BytePacketBuffer) {
 	self.resource_entries = buffer.read_uint16()
 }
 
+func (self *DnsHeader) write(buffer *BytePacketBuffer) {
+	buffer.write_uint16(self.id)
+
+	buffer.write_uint8(uint8(b2i(self.recursion_desired)) | uint8(b2i(self.truncated_message) << 1) | uint8(b2i(self.authoritative_answer) << 2) | uint8(self.opcode << 3) | uint8(self.rescode << 7))
+
+	buffer.write_uint8(uint8(self.rescode) | uint8(b2i(self.checking_disabled) << 4) | uint8(b2i(self.authed_data) << 5) | uint8(b2i(self.z) << 6) | uint8(b2i(self.recursion_available) << 7))
+
+	buffer.write_uint16(self.questions)
+	buffer.write_uint16(self.answers)
+	buffer.write_uint16(self.authoritative_entries)
+	buffer.write_uint16(self.resource_entries)
+}
+
 func QueryTypeToNum(queryType QueryType) uint16 {
 	if queryType.Type == 0 {
 		return queryType.Value
@@ -311,6 +376,13 @@ func (self *DnsQuestion) read(buffer *BytePacketBuffer) {
 
 	self.qtype = QueryTypeFromNum(qtype)
 
+}
+
+func (self *DnsQuestion) write(buffer *BytePacketBuffer) {
+	buffer.write_qname(&self.name)
+	typenum := self.qtype.Type
+	buffer.write_uint16(uint16(typenum))
+	buffer.write_uint16(1)
 }
 
 func DnsRecordRead(buffer *BytePacketBuffer) DnsRecord {
@@ -354,6 +426,29 @@ func DnsRecordRead(buffer *BytePacketBuffer) DnsRecord {
 	return dns
 }
 
+func (self *DnsRecord) write(buffer *BytePacketBuffer) uint {
+	start_pos := buffer.getpos()
+
+	if self.Type == DnsRecordTypeUnknown {
+		fmt.Println("Skipping unknown record")
+		return (buffer.getpos() - start_pos)
+	}
+
+	buffer.write_qname(&self.domain)
+	buffer.write_uint16(self.qtype)
+	buffer.write_uint16(1)
+	buffer.write_uint32(self.ttl)
+	buffer.write_uint16(4)
+
+	octects := self.addr.To4()
+	buffer.write_uint8(octects[0])
+	buffer.write_uint8(octects[1])
+	buffer.write_uint8(octects[2])
+	buffer.write_uint8(octects[3])
+
+	return (buffer.getpos() - start_pos)
+}
+
 func NewDnsPacket() *DnsPacket {
 	return &DnsPacket{
 		header: NewDnsHeader(),
@@ -391,26 +486,72 @@ func DnsPacketFromBuffer(buffer *BytePacketBuffer) *DnsPacket {
 	return result
 }
 
+func (self *DnsPacket) write(buffer *BytePacketBuffer) {
+	self.header.questions = uint16(len(self.questions))
+	self.header.answers = uint16(len(self.answers))
+	self.header.authoritative_entries = uint16(len(self.authorities))
+	self.header.resource_entries = uint16(len(self.resources))
+
+	self.header.write(buffer)
+
+	for _,question := range self.questions {
+		question.write(buffer)
+	}
+
+	for _,rec := range self.answers {
+		rec.write(buffer)
+	}
+
+	for _,rec := range self.authorities {
+		rec.write(buffer)
+	}
+
+	for _,rec := range self.resources {
+		rec.write(buffer)
+	}
+}
+
 func main() {
-	f, err := os.Open("response_packet.txt")
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	defer f.Close()
+	qname := "google.com"
+	qtype := QueryTypeA
 
-	var buffer *BytePacketBuffer
-	var packet DnsPacket
-	buffer = NewBytePacketBuffer()
-	_, err = f.Read(buffer.buf[:])
+	serverAddr, err := net.ResolveUDPAddr("udp", "8.8.8.8:53")
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	packet = *DnsPacketFromBuffer(buffer)
-	fmt.Printf("%#v\n", packet.header)
-	fmt.Printf("%#v\n", packet.questions)
-	fmt.Printf("%#v\n", packet.answers)
+	localAddr, err := net.ResolveUDPAddr("udp", "0.0.0.0:43210")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	conn, err := net.ListenUDP("udp", localAddr)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer conn.Close()
+
+	packet := NewDnsPacket()
+	packet.header.id = 6666
+	packet.header.questions = 1
+	packet.header.recursion_desired = true
+	packet.questions = append(packet.questions, NewDnsQuestion(qname, qtype))
+
+	req_buffer := NewBytePacketBuffer()
+	packet.write(req_buffer)
+
+	conn.WriteTo(req_buffer.buf[:], serverAddr)
+
+	res_buffer := NewBytePacketBuffer()
+	conn.ReadFromUDP(res_buffer.buf[:])
+
+	res_packet := DnsPacketFromBuffer(res_buffer)
+	fmt.Printf("%#v\n", res_packet)
+	fmt.Printf("%#v\n", res_packet.header)
+	fmt.Println(res_packet.answers[0].addr.String())
+
 
 }
