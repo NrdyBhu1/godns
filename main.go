@@ -566,6 +566,4 @@ func main() {
 	fmt.Printf("%#v\n", res_packet)
 	fmt.Printf("%#v\n", res_packet.header)
 	fmt.Println(res_packet.answers[0].addr.String())
-
-
 }
